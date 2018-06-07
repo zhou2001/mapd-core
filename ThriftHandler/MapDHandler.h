@@ -441,6 +441,10 @@ class MapDHandler : public MapDIf {
   void convert_explain(TQueryResult& _return, const ResultSet& results, const bool column_format) const;
   void convert_result(TQueryResult& _return, const ResultSet& results, const bool column_format) const;
 
+  // SQL plus command result convert
+  std::string get_list_columns(const TSessionId& session, std::string table_name);
+  // End for SQL plus commands
+
   template <class R>
   void convert_rows(TQueryResult& _return,
                     const std::vector<TargetMetaInfo>& targets,

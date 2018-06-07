@@ -49,6 +49,11 @@ class ParserWrapper {
   bool is_update_dml = false;
   bool is_copy = false;
   bool is_copy_to = false;
+
+  bool is_sqlplus_cmd = false;		// is SQL plus command
+  bool is_describer = false;		// DESCRIBER command
+  std::string table_name;
+
   std::string actual_query;
 
   DMLType getDMLType() const { return dml_type; }

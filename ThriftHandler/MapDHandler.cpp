@@ -3403,6 +3403,17 @@ void MapDHandler::sql_execute_impl(TQueryResult& _return,
   try {
     ParserWrapper pw{query_str};
     std::map<std::string, bool> tableNames;
+
+    // SQL plus commands
+    if (pw.is_sqlplus_cmd) {
+      if (pw.is_describer) {
+	create_simple_result(_return, ResultSet(get_list_columns(session_info.get_session_id(), pw.table_name)), true, "");
+        return;
+      }
+      return;
+    }
+    // End of SQL plus commands
+    
     if (is_calcite_path_permissable(pw)) {
       std::string query_ra;
       _return.execution_time_ms += measure<>::execution([&]() {
@@ -3853,3 +3864,126 @@ void MapDHandler::get_license_claims(TLicenseInfo& _return, const TSessionId& se
   const auto session_info = get_session(session);
   _return.claims.push_back("");
 }
+
+// sql plus "DESCRIBER" command, get CREATE TABLE from table details
+std::string MapDHandler::get_list_columns(const TSessionId& session, std::string table_name) {
+
+  auto unserialize_key_metainfo = [](const std::string key_metainfo) -> std::vector<std::string> {
+    std::vector<std::string> keys_with_spec;
+    rapidjson::Document document;
+    document.Parse(key_metainfo.c_str());
+    CHECK(!document.HasParseError());
+    CHECK(document.IsArray());
+    for (auto it = document.Begin(); it != document.End(); ++it) {
+      const auto& key_with_spec_json = *it;
+      CHECK(key_with_spec_json.IsObject());
+      const std::string type = key_with_spec_json["type"].GetString();
+      const std::string name = key_with_spec_json["name"].GetString();
+      auto key_with_spec = type + " (" + name + ")";
+      if (type == "SHARED DICTIONARY") {
+        key_with_spec += " REFERENCES ";
+        const std::string foreign_table = key_with_spec_json["foreign_table"].GetString();
+        const std::string foreign_column = key_with_spec_json["foreign_column"].GetString();
+        key_with_spec += foreign_table + "(" + foreign_column + ")";
+      } else {
+        CHECK(type == "SHARD KEY");
+      }
+      keys_with_spec.push_back(key_with_spec);
+    }
+    return keys_with_spec;
+  };
+
+  std::stringstream output_stream;
+  TTableDetails table_details;
+
+  get_table_details(table_details, session, table_name); 
+
+  if (table_details.view_sql.empty()) {
+    std::string temp_holder(" ");
+    if (table_details.is_temporary) {
+      temp_holder = " TEMPORARY ";
+    }
+    output_stream << "CREATE" + temp_holder + "TABLE " + table_name + " (\n";
+  } else {
+    output_stream << "CREATE VIEW " + table_name + " AS " + table_details.view_sql << "\n";
+    output_stream << "\n"
+                  << "View columns:"
+                  << "\n\n";
+  }
+
+  std::string comma_or_blank("");
+  for (TColumnType p : table_details.row_desc) {
+    if (p.is_system) {
+      continue;
+    }
+    std::string encoding = "";
+    if (p.col_type.type == TDatumType::STR) {
+      encoding = (p.col_type.encoding == 0 ? " ENCODING NONE"
+                                           : " ENCODING " + thrift_to_encoding_name(p.col_type) + "(" +
+                                                 std::to_string(p.col_type.comp_param) + ")");
+    } else if (p.col_type.type == TDatumType::POINT || p.col_type.type == TDatumType::LINESTRING ||
+               p.col_type.type == TDatumType::POLYGON || p.col_type.type == TDatumType::MULTIPOLYGON) {
+      if (p.col_type.scale == 4326) {
+        encoding = (p.col_type.encoding == 0 ? " ENCODING NONE"
+                                             : " ENCODING " + thrift_to_encoding_name(p.col_type) + "(" +
+                                                   std::to_string(p.col_type.comp_param) + ")");
+      }
+    } else {
+      encoding = (p.col_type.encoding == 0 ? ""
+                                           : " ENCODING " + thrift_to_encoding_name(p.col_type) + "(" +
+                                                 std::to_string(p.col_type.comp_param) + ")");
+    }
+
+    output_stream << comma_or_blank << p.col_name << " " << thrift_to_name(p.col_type)
+                  << (p.col_type.nullable ? "" : " NOT NULL") << encoding;
+    comma_or_blank = ",\n";
+  }
+
+  if (table_details.view_sql.empty()) {
+    const auto keys_with_spec = unserialize_key_metainfo(table_details.key_metainfo);
+    for (const auto& key_with_spec : keys_with_spec) {
+      output_stream << ",\n" << key_with_spec;
+    }
+
+    // push final ")\n";
+    output_stream << ")\n";
+    comma_or_blank = "";
+    std::string frag = "";
+    std::string page = "";
+    std::string row = "";
+    std::string partition_detail = "";
+    if (DEFAULT_FRAGMENT_ROWS != table_details.fragment_size) {
+      frag = "FRAGMENT_SIZE = " + std::to_string(table_details.fragment_size);
+      comma_or_blank = ", ";
+    }
+//    if (table_details.shard_count) {
+//      frag += comma_or_blank + "SHARD_COUNT = " + std::to_string(table_details.shard_count * context.cluster_status.size());
+//      comma_or_blank = ", ";
+//    }
+    if (DEFAULT_PAGE_SIZE != table_details.page_size) {
+      page = comma_or_blank + "PAGE_SIZE = " + std::to_string(table_details.page_size);
+      comma_or_blank = ", ";
+    }
+    if (DEFAULT_MAX_ROWS != table_details.max_rows) {
+      row = comma_or_blank + "MAX_ROWS = " + std::to_string(table_details.max_rows);
+      comma_or_blank = ", ";
+    }
+    if (table_details.partition_detail != TPartitionDetail::DEFAULT) {
+      partition_detail = comma_or_blank + "PARTITION = " +
+                         (table_details.partition_detail == TPartitionDetail::REPLICATED ? "REPLICATED" : "");
+      partition_detail += (table_details.partition_detail == TPartitionDetail::SHARDED ? "SHARDED" : "");
+      partition_detail += (table_details.partition_detail == TPartitionDetail::OTHER ? "OTHER" : "");
+    }
+    std::string with = frag + page + row + partition_detail;
+    if (with.length() > 0) {
+      output_stream << "WITH (" << with << ")\n";
+    }
+  } else {
+    output_stream << "\n";
+  }
+
+  return output_stream.str();
+}
+
+// End for SQL plus commands 
+

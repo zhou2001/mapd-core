@@ -25,6 +25,7 @@
 #include "Shared/measure.h"
 
 #include <boost/algorithm/string.hpp>
+#include <boost/tokenizer.hpp>
 
 #include <glog/logging.h>
 
@@ -89,6 +90,29 @@ ParserWrapper::ParserWrapper(std::string query_string) {
       dml_type = (DMLType)(i);
       return;
     }
+  }
+
+  // Check if it is SQL plus commands, DESCRIBER
+
+  const char* delim = "\t ;";
+  boost::char_separator<char> sep{delim, "", boost::drop_empty_tokens};
+  typedef boost::tokenizer<boost::char_separator<char>> tokenizer;
+
+  tokenizer tok{query_string, sep};
+
+  tokenizer::iterator it=tok.begin();
+  if (*it == "DESC" || *it == "DESCRIBER") {
+    it++;
+    if (it == tok.end()) return;
+
+    table_name = *it;
+
+    it++;
+    if (it != tok.end()) return;
+
+    is_describer = true;
+    is_sqlplus_cmd = true;
+    return;
   }
 }
 
