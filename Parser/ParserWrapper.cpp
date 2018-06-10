@@ -51,6 +51,12 @@ ParserWrapper::ParserWrapper(std::string query_string) {
     if (inner.is_ddl || inner.is_update_dml) {
       is_other_explain = true;
       return;
+    } else if (inner.is_sqlplus_cmd) {
+      // EXPLAIN sql DESC command, just execute DESC command
+      is_sqlplus_cmd = inner.is_sqlplus_cmd;
+      is_describer = inner.is_describer;
+      table_name = inner.table_name;
+      is_other_explain = false;
     } else {
       is_select_calcite_explain = true;
       return;
@@ -63,6 +69,12 @@ ParserWrapper::ParserWrapper(std::string query_string) {
     if (inner.is_ddl || inner.is_update_dml) {
       is_other_explain = true;
       return;
+    } else if (inner.is_sqlplus_cmd) {
+      // EXPLAIN sql DESC command, just execute DESC command
+      is_sqlplus_cmd = inner.is_sqlplus_cmd;
+      is_describer = inner.is_describer;
+      table_name = inner.table_name;
+      is_other_explain = false;
     } else {
       is_select_explain = true;
       return;
@@ -94,14 +106,15 @@ ParserWrapper::ParserWrapper(std::string query_string) {
 
   // Check if it is SQL plus commands, DESCRIBER
 
-  const char* delim = "\t ;";
+  const char* delim = "\t ";
   boost::char_separator<char> sep{delim, "", boost::drop_empty_tokens};
   typedef boost::tokenizer<boost::char_separator<char>> tokenizer;
 
-  tokenizer tok{query_string, sep};
+  actual_query = boost::trim_copy_if(query_string, boost::algorithm::is_any_of("; \t"));
+  tokenizer tok{actual_query, sep};
 
   tokenizer::iterator it=tok.begin();
-  if (*it == "DESC" || *it == "DESCRIBER") {
+  if (*it == "DESC" || *it == "DESCRIBER" || *it == "desc" || *it == "describer") {
     it++;
     if (it == tok.end()) return;
 
